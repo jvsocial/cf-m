@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "CloudFormation - Ubuntu VM Setup"
+
+Parameters:
+  KeyName:
+    Default: "jv" # Ensure this matches the actual key pair name in AWS
+    Description: "Name of an existing EC2 KeyPair to enable SSH access to the instance"
+    Type: "AWS::EC2::KeyPair::KeyName"
+
+  StackPostfix:
+    Default: "ubuntu-vm"
+    Description: "Postfix for this VM stack to easily recognize a particular VM."
+    Type: String
+    MinLength: "1"
+    MaxLength: "64"
+
+  InstanceType:
+    Description: "EC2 instance type. Change based on application needs."
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.nano
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+    ConstraintDescription: "Must be a valid EC2 instance type."
+
+  InstanceAMIId:
+    Default: "ami-08d4ac5b634553e16" # Ubuntu 22.04 LTS AMI (Update as per your region)
+    Description: "Provide AMI ID for the Ubuntu VM"
+    Type: String
+
+  CidrBlock:
+    Description: "Enter CIDR block that the VPC should use. Example: 10.0.0.0/16"
+    Type: String
+    MinLength: "9"
+    MaxLength: "18"
+    Default: 10.0.0.0/16
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: "Must be a valid IP CIDR range of the form x.x.x.x/x."
+
+  LimitedSSHAccess:
+    Description: "Enter CIDR for network that may access via SSH"
+    Type: String
+    MinLength: "9"
+    MaxLength: "18"
+    Default: "0.0.0.0/0" # Change to a specific IP range for security
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: "Must be a valid IP CIDR range of the form x.x.x.x/x."
+
+Resources:
+  VM:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: !Ref InstanceAMIId
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp2
+            VolumeSize: 20
+            DeleteOnTermination: true
+            Encrypted: true
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref VMSubnet
+      SecurityGroupIds:
+        - !Ref FormationSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-${StackPostfix}"
+
+  FormationSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Enable SSH and general HTTP Access"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref LimitedSSHAccess
+      VpcId: !Ref VMvpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-${StackPostfix}"
+
+  VMvpc:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      CidrBlock: !Ref CidrBlock
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-${StackPostfix}"
+
+  VMInternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-${StackPostfix}"
+
+  AttachGateway:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      VpcId: !Ref VMvpc
+      InternetGatewayId: !Ref VMInternetGateway
+
+  VMSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref VMvpc
+      CidrBlock: !Ref CidrBlock
+      AvailabilityZone: !Select
+        - "0"
+        - !GetAZs "" # Get the first AZ in the list
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-${StackPostfix}"
+
+  PublicRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref VMvpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-${StackPostfix}"
+
+  PublicRouteVM:
+    Type: "AWS::EC2::Route"
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref VMInternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref VMSubnet
+
+  ElasticIPAddress:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref VM
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-${StackPostfix}"
+
+Outputs:
+  InstancePublicIp:
+    Description: "Public IP address of the instance"
+    Value: !Ref ElasticIPAddress
